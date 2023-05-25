@@ -7,7 +7,7 @@ use processing::{histogram::PointHistogram, ProcessingParams, numass, Algorithm}
 #[cfg(not(target_arch = "wasm32"))]
 use {
     processing::{
-        amplitudes_to_histogram, extract_amplitudes, numass::protos::rsb_event
+        post_process, amplitudes_to_histogram, extract_amplitudes, numass::protos::rsb_event
     },
     protobuf::Message,
     std::path::Path,
@@ -131,7 +131,8 @@ pub fn process_file(filepath: PathBuf, params: ProcessingParams) -> Option<FileC
 
         FileCache {
             opened: true,
-            histogram: Some(amplitudes_to_histogram(amps, params.post_processing, params.histogram)),
+            histogram: Some(
+                amplitudes_to_histogram(post_process(amps, &params.post_processing), params.histogram)),
             processed: Some(processed),
             meta: Some(meta),
         }
