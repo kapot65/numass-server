@@ -1,115 +1,131 @@
-#[cfg(target_arch = "wasm32")]
-fn main() {
-    panic!("this binary is not meant to be run in browser")
+use std::{path::PathBuf, collections::BTreeMap};
+
+use axum::{
+    routing::{get, post},
+    response::Response,
+    body::Body,
+    Router, Json, extract::{State, Path},
+};
+
+#[cfg(not(debug_assertions))]
+use axum::{response::Html, body::Full};
+
+use backend::Opt;
+use dataforge::{DFMessage, read_df_message, read_df_header_and_meta};
+use processing::{Algorithm, web::{ProcessParams, expand_dir}, extract_amplitudes, numass::{self, protos::rsb_event}};
+use protobuf::Message;
+use tower_http::services::ServeDir;
+
+fn is_default_params(params: &ProcessParams) -> bool {
+    params.algorithm == Algorithm::default() && params.convert_to_kev == true
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    use std::{net::SocketAddr, path::PathBuf, str::FromStr, time::Duration};
+#[tokio::main]
+async fn main() {
+
+    let args = <backend::Opt as clap::Parser>::parse();
+    let address = args.address.clone();
+
+    println!("Starting server at {}", address);
+
+    
+    // build our application with a single route
+    let app = Router::new()
+        .route("/api/meta/*path", get(|Path(filepath): Path<PathBuf>| async move {
+            let mut point_file = tokio::fs::File::open(PathBuf::from("/").join(filepath)).await.unwrap();
+            axum::response::Json(read_df_header_and_meta::<numass::NumassMeta>(&mut point_file).await.ok().map(|(_, meta)| meta))
+        }))
+        .route("/api/modified/*path", get(|Path(filepath): Path<PathBuf>| async move {
+            let metadata = tokio::fs::metadata(PathBuf::from("/").join(filepath)).await.unwrap();
+            axum::response::Json(metadata.modified().unwrap())
+        }))
+        .route("/api/process/*path", post(|
+                State(args): State<Opt>,
+                Path(filepath): Path<PathBuf>, 
+                Json(params): Json<ProcessParams>,
+            | async move {
+
+            let key = filepath.clone().into_os_string().into_string().unwrap();
+
+            let read_amplitudes = {
+                let params = params.clone();
+                let cache_directory = args.cache_directory.clone();
+                let key = key.clone();
+                || async move {
+                    let mut point_file = tokio::fs::File::open(PathBuf::from("/").join(filepath)).await.unwrap(); 
+                    if let Ok(DFMessage {
+                        meta: numass::NumassMeta::Reply(numass::Reply::AcquirePoint { .. }),
+                        data,
+                    }) = read_df_message::<numass::NumassMeta>(&mut point_file).await {
+                        let point = rsb_event::Point::parse_from_bytes(&data.unwrap()).unwrap(); // return None for bad parsing
+                        let out = Some(extract_amplitudes(
+                            &point,
+                            &params.algorithm,
+                            params.convert_to_kev,
+                        ));
+
+                        if is_default_params(&params) {
+                            if let Some(cache_directory) = cache_directory {
+                                let processed = rmp_serde::to_vec(&out).unwrap();
+                                cacache::write(cache_directory, key, &processed).await.unwrap();
+                            }
+                        }
+                        
+                        out
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            let amplitudes = if let Some(cache_directory) = args.cache_directory {
+                if let Ok(data) = cacache::read(cache_directory, &key).await {
+                    rmp_serde::from_slice::<Option<BTreeMap<u64, BTreeMap<usize, f32>>>>(&data).unwrap()
+                } else {
+                    read_amplitudes().await
+                }
+            } else {
+                read_amplitudes().await
+            };
+            
+            Response::builder()
+                .header("content-type", "application/messagepack")
+                .body(Body::from(rmp_serde::to_vec(&amplitudes).unwrap()))
+                .unwrap()
+        }))
+        .route("/api/files", get(|State(args): State<Opt>| async move {
+            Json(expand_dir(args.directory))
+        }))
+        .nest_service(&format!("/files{}", args.directory.to_str().unwrap()), ServeDir::new(args.directory.clone()))
+        .with_state(args);
 
     #[cfg(not(debug_assertions))]
-    use actix_web::{get, web::Bytes};
-    use actix_web::{
-        http::header::ContentType,
-        post,
-        web::{self, Data},
-        App, HttpResponse, HttpServer, Responder,
-    };
-    use clap::Parser;
+    let app = app.route("/", get(|| async  {
+        Html(include_str!("../../dist/index.html"))
+    })).route("/data-viewer.js", get(|| async  {
+        Response::builder()
+            .header("content-type", "application/javascript")
+            .body(Full::from(include_str!("../../dist/data-viewer.js")))
+            .unwrap()
+    })).route("/data-viewer_bg.wasm", get(|| async  {
+        Response::builder()
+            .header("content-type", "application/wasm")
+            .body(Body::from(include_bytes!("../../dist/data-viewer_bg.wasm").to_vec()))
+            .unwrap()
+    })).route("/worker.js", get(|| async  {
+        Response::builder()
+            .header("content-type", "application/javascript")
+            .body(Full::from(include_str!("../../dist/worker.js")))
+            .unwrap()
+    })).route("/worker_bg.wasm", get(|| async  {
+        Response::builder()
+            .header("content-type", "application/wasm")
+            .body(Body::from(include_bytes!("../../dist/worker_bg.wasm").to_vec()))
+            .unwrap()
+    }));
 
-    use backend::{
-        expand_dir, process_file, ProcessRequest,
-        CACHE_DIRECTORY,
-    };
-
-    #[derive(Parser, Debug, Clone)]
-    #[clap(author, version, about, long_about = None)]
-    struct Opt {
-        directory: PathBuf,
-        #[clap(long, default_value_t = SocketAddr::from_str("0.0.0.0:8085").unwrap())]
-        address: SocketAddr,
-        #[clap(long)]
-        cache_directory: Option<String>,
-    }
-
-    #[post("/api/process")]
-    async fn process(request: web::Json<ProcessRequest>) -> impl Responder {
-        let actix_web::web::Json(reqest) = request;
-
-        match reqest {
-            ProcessRequest::CalcHist { filepath, processing } => HttpResponse::Ok()
-                .content_type(ContentType::json())
-                .body(serde_json::to_string(&process_file(filepath, processing)).unwrap()),
-            _ => HttpResponse::BadRequest().body(""),
-        }
-    }
-
-    #[cfg(not(debug_assertions))]
-    #[get("/")]
-    async fn index() -> impl Responder {
-        HttpResponse::Ok()
-            .content_type(ContentType::html())
-            .body(include_str!("../../dist/index.html"))
-    }
-
-    #[cfg(not(debug_assertions))]
-    #[get("/data-viewer.js")]
-    async fn js() -> impl Responder {
-        HttpResponse::Ok()
-            .content_type(ContentType(mime::APPLICATION_JAVASCRIPT))
-            .body(include_str!("../../dist/data-viewer.js"))
-    }
-
-    #[cfg(not(debug_assertions))]
-    #[get("/data-viewer_bg.wasm")]
-    async fn wasm() -> impl Responder {
-        HttpResponse::Ok()
-            .content_type("application/wasm")
-            .body(Bytes::from_static(include_bytes!(
-                "../../dist/data-viewer_bg.wasm"
-            )))
-    }
-
-    let args = Opt::parse();
-
-    if let Some(cache_directory) = args.cache_directory {
-        if std::env::var(CACHE_DIRECTORY).is_err() {
-            std::env::set_var(CACHE_DIRECTORY, cache_directory)
-        } else {
-            panic!("cache directory is set via CLI and ENV at the same time!")
-        }
-    }
-
-    HttpServer::new(move || {
-        let app = App::new()
-            .app_data(Data::new(args.directory.clone()))
-            .route(
-                "/api/files",
-                web::get().to(|directory: web::Data<PathBuf>| async move {
-                    let files = expand_dir(PathBuf::clone(&directory));
-                    web::Json(files)
-                }),
-            )
-            .service(process)
-            .service(
-                actix_files::Files::new(
-                    &format!("/files{}", args.directory.to_str().unwrap()),
-                    &args.directory,
-                )
-                .show_files_listing(),
-            );
-        #[cfg(not(debug_assertions))]
-        {
-            app.service(index).service(js).service(wasm)
-        }
-        #[cfg(debug_assertions)]
-        {
-            app
-        }
-    })
-    .keep_alive(Duration::from_secs(600))
-    .bind(args.address)?
-    .run()
-    .await
+    axum::Server::bind(&address)
+        .serve(app.into_make_service())
+        .await
+        .unwrap();
 }
