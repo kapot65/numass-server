@@ -12,7 +12,7 @@ use axum::{response::Html, body::Full};
 
 use backend::Opt;
 use dataforge::{DFMessage, read_df_message, read_df_header_and_meta};
-use processing::{Algorithm, web::{ProcessParams, expand_dir}, extract_amplitudes, numass::{self, protos::rsb_event}};
+use processing::{Algorithm, ProcessParams, viewer::FSRepr, extract_amplitudes, numass::{self, protos::rsb_event}};
 use protobuf::Message;
 use tower_http::services::ServeDir;
 
@@ -28,7 +28,6 @@ async fn main() {
 
     println!("Starting server at {}", address);
 
-    
     // build our application with a single route
     let app = Router::new()
         .route("/api/meta/*path", get(|Path(filepath): Path<PathBuf>| async move {
@@ -42,13 +41,12 @@ async fn main() {
         .route("/api/process/*path", post(|
                 State(args): State<Opt>,
                 Path(filepath): Path<PathBuf>, 
-                Json(params): Json<ProcessParams>,
+                Json(processing): Json<ProcessParams>,
             | async move {
 
             let key = filepath.clone().into_os_string().into_string().unwrap();
 
             let read_amplitudes = {
-                let params = params.clone();
                 let cache_directory = args.cache_directory.clone();
                 let key = key.clone();
                 || async move {
@@ -60,11 +58,10 @@ async fn main() {
                         let point = rsb_event::Point::parse_from_bytes(&data.unwrap()).unwrap(); // return None for bad parsing
                         let out = Some(extract_amplitudes(
                             &point,
-                            &params.algorithm,
-                            params.convert_to_kev,
+                            &processing,
                         ));
 
-                        if is_default_params(&params) {
+                        if is_default_params(&processing) {
                             if let Some(cache_directory) = cache_directory {
                                 let processed = rmp_serde::to_vec(&out).unwrap();
                                 cacache::write(cache_directory, key, &processed).await.unwrap();
@@ -94,7 +91,7 @@ async fn main() {
                 .unwrap()
         }))
         .route("/api/files", get(|State(args): State<Opt>| async move {
-            Json(expand_dir(args.directory))
+            Json(FSRepr::expand_dir(args.directory))
         }))
         .nest_service(&format!("/files{}", args.directory.to_str().unwrap()), ServeDir::new(args.directory.clone()))
         .with_state(args);
