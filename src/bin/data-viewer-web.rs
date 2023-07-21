@@ -17,14 +17,14 @@ use protobuf::Message;
 use tower_http::services::ServeDir;
 
 fn is_default_params(params: &ProcessParams) -> bool {
-    params.algorithm == Algorithm::default() && params.convert_to_kev == true
+    params.algorithm == Algorithm::default() && params.convert_to_kev
 }
 
 #[tokio::main]
 async fn main() {
 
     let args = <backend::Opt as clap::Parser>::parse();
-    let address = args.address.clone();
+    let address = args.address;
 
     println!("Starting server at {}", address);
 
