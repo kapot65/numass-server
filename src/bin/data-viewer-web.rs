@@ -12,7 +12,7 @@ use axum::{response::Html, body::Full};
 
 use backend::Opt;
 use dataforge::{DFMessage, read_df_message, read_df_header_and_meta};
-use processing::{Algorithm, ProcessParams, viewer::FSRepr, extract_amplitudes, numass::{self, protos::rsb_event}};
+use processing::{Algorithm, ProcessParams, viewer::FSRepr, extract_events, numass::{self, protos::rsb_event}};
 use protobuf::Message;
 use tower_http::services::ServeDir;
 
@@ -32,7 +32,7 @@ async fn main() {
     let app = Router::new()
         .route("/api/meta/*path", get(|Path(filepath): Path<PathBuf>| async move {
             let mut point_file = tokio::fs::File::open(PathBuf::from("/").join(filepath)).await.unwrap();
-            axum::response::Json(read_df_header_and_meta::<numass::NumassMeta>(&mut point_file).await.ok().map(|(_, meta)| meta))
+            axum::response::Json(read_df_header_and_meta::<serde_json::Value>(&mut point_file).await.ok().map(|(_, meta)| meta))
         }))
         .route("/api/modified/*path", get(|Path(filepath): Path<PathBuf>| async move {
             let metadata = tokio::fs::metadata(PathBuf::from("/").join(filepath)).await.unwrap();
@@ -56,7 +56,7 @@ async fn main() {
                         data,
                     }) = read_df_message::<numass::NumassMeta>(&mut point_file).await {
                         let point = rsb_event::Point::parse_from_bytes(&data.unwrap()).unwrap(); // return None for bad parsing
-                        let out = Some(extract_amplitudes(
+                        let out = Some(extract_events(
                             &point,
                             &processing,
                         ));
@@ -77,7 +77,7 @@ async fn main() {
 
             let amplitudes = if let Some(cache_directory) = args.cache_directory {
                 if let Ok(data) = cacache::read(cache_directory, &key).await {
-                    rmp_serde::from_slice::<Option<BTreeMap<u64, BTreeMap<usize, f32>>>>(&data).unwrap()
+                    rmp_serde::from_slice::<Option<BTreeMap<u64, BTreeMap<usize, (u16, f32)>>>>(&data).unwrap()
                 } else {
                     read_amplitudes().await
                 }

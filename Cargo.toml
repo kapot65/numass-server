@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+serde_json = "1.0.64"
 rmp-serde = "1.1.1"
 
 processing = { git = "https://bitbucket.org/Kapot/numass-processing.git", tag = "0.1.3" }
