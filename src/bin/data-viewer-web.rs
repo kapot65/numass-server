@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration, collections::hash_map::DefaultHasher, hash::{Hash, Hasher}};
 
 use axum::{
     routing::{get, post},
@@ -12,7 +12,7 @@ use axum::{response::Html, body::Full};
 
 use backend::Opt;
 use dataforge::{DFMessage, read_df_message, read_df_header_and_meta};
-use processing::{Algorithm, ProcessParams, viewer::FSRepr, extract_events, numass::{self, protos::rsb_event}, NumassAmps};
+use processing::{numass::{self, protos::rsb_event}, process::{extract_events, Algorithm, ProcessParams}, storage::FSRepr, types::NumassEvents};
 use protobuf::Message;
 use tower_http::services::ServeDir;
 
@@ -44,12 +44,18 @@ async fn main() {
                 Json(processing): Json<ProcessParams>,
             | async move {
 
-            let key = filepath.clone().into_os_string().into_string().unwrap();
+            let hash = {
+                let mut hasher = DefaultHasher::new();
+                filepath.hash(&mut hasher);
+                processing.hash(&mut hasher);
+                hasher.finish()
+            };
 
             let read_amplitudes = {
                 let cache_directory = args.cache_directory.clone();
-                let key = key.clone();
+                let key = hash.to_string();
                 || async move {
+                    // TODO: switch to functions from processing::storage
                     let mut point_file = tokio::fs::File::open(PathBuf::from("/").join(filepath)).await.unwrap(); 
                     if let Ok(DFMessage {
                         meta: numass::NumassMeta::Reply(numass::Reply::AcquirePoint { .. }),
@@ -69,13 +75,13 @@ async fn main() {
                         }
                         processed
                     } else {
-                        rmp_serde::to_vec::<Option<NumassAmps>>(&None).unwrap()
+                        rmp_serde::to_vec::<Option<NumassEvents>>(&None).unwrap()
                     }
                 }
             };
 
             let amplitudes = if let Some(cache_directory) = args.cache_directory {
-                if let Ok(data) = cacache::read(cache_directory, &key).await {
+                if let Ok(data) = cacache::read(cache_directory, &hash.to_string()).await {
                     data
                 } else {
                     read_amplitudes().await
