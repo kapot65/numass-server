@@ -63,7 +63,7 @@ async fn main() {
                     }) = read_df_message::<numass::NumassMeta>(&mut point_file).await {
                         let point = rsb_event::Point::parse_from_bytes(&data.unwrap()).unwrap(); // return None for bad parsing
                         let out = Some(extract_events(
-                            &point,
+                            point,
                             &processing,
                         ));
                         let processed = rmp_serde::to_vec(&out).unwrap();
