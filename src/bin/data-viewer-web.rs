@@ -34,6 +34,13 @@ async fn main() {
             let mut point_file = tokio::fs::File::open(PathBuf::from("/").join(filepath)).await.unwrap();
             axum::response::Json(read_df_header_and_meta::<serde_json::Value>(&mut point_file).await.ok().map(|(_, meta)| meta))
         }))
+        .route("/api/ls/*path", get(|Path(filepath): Path<PathBuf>| async move {
+            let filepath = PathBuf::from("/").join(filepath);
+            axum::response::Json(FSRepr::ls(filepath).await)
+        }))
+        .route("/api/root", get(|State(args): State<Opt>| async move {
+            Json(FSRepr::ls(args.directory).await)
+        }))
         .route("/api/modified/*path", get(|Path(filepath): Path<PathBuf>| async move {
             let metadata = tokio::fs::metadata(PathBuf::from("/").join(filepath)).await.unwrap();
             axum::response::Json(metadata.modified().unwrap())
@@ -94,9 +101,6 @@ async fn main() {
                 .header("content-type", "application/messagepack")
                 .body(Body::from(amplitudes))
                 .unwrap()
-        }))
-        .route("/api/files", get(|State(args): State<Opt>| async move {
-            Json(FSRepr::expand_dir(args.directory))
         }))
         .nest_service(&format!("/files{}", args.directory.to_str().unwrap()), ServeDir::new(args.directory.clone()))
         .with_state(args);
