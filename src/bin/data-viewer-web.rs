@@ -71,24 +71,29 @@ async fn main() {
                     // TODO: switch to functions from processing::storage
                     let mut point_file = tokio::fs::File::open(PathBuf::from("/").join(filepath)).await.unwrap(); 
                     if let Ok(DFMessage {
-                        meta: numass::NumassMeta::Reply(numass::Reply::AcquirePoint { .. }),
+                        meta,
                         data,
                     }) = read_df_message::<numass::NumassMeta>(&mut point_file).await {
-                        let point = rsb_event::Point::parse_from_bytes(&data.unwrap()).unwrap(); // return None for bad parsing
-                        let out = Some(extract_events(
-                            point,
-                            &processing,
-                        ));
-                        let processed = rmp_serde::to_vec(&out).unwrap();
+                        if let numass::NumassMeta::Reply(numass::Reply::AcquirePoint { .. }) = &meta {
+                            let point = rsb_event::Point::parse_from_bytes(&data.unwrap()).unwrap(); // return None for bad parsing
+                            let out = Some(extract_events(
+                                Some(meta),
+                                point,
+                                &processing,
+                            ));
+                            let processed = rmp_serde::to_vec(&out).unwrap();
 
-                        if is_default_params(&processing) {
-                            if let Some(cache_directory) = cache_directory {
-                                cacache::write(cache_directory, key, &processed).await.unwrap();
+                            if is_default_params(&processing) {
+                                if let Some(cache_directory) = cache_directory {
+                                    cacache::write(cache_directory, key, &processed).await.unwrap();
+                                }
                             }
+                            processed
+                        } else {
+                            rmp_serde::to_vec::<Option<NumassEvents>>(&None).unwrap() // TODO: send error instead of None
                         }
-                        processed
                     } else {
-                        rmp_serde::to_vec::<Option<NumassEvents>>(&None).unwrap()
+                        rmp_serde::to_vec::<Option<NumassEvents>>(&None).unwrap() // TODO: send error instead of None
                     }
                 }
             };
