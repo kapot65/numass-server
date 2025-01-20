@@ -18,7 +18,7 @@ static GLOBAL: Jemalloc = Jemalloc;
 
 use backend::Opt;
 use dataforge::{DFMessage, read_df_message, read_df_header_and_meta};
-use processing::{numass::{self, protos::rsb_event}, process::{extract_events, Algorithm, ProcessParams}, storage::FSRepr, types::NumassEvents};
+use processing::{numass::{self, protos::rsb_event}, preprocess::Preprocess, process::{extract_events, Algorithm, ProcessParams}, storage::FSRepr, types::NumassEvents};
 use protobuf::Message;
 use tower_http::services::ServeDir;
 
@@ -90,10 +90,10 @@ async fn main() {
                             }
                             processed
                         } else {
-                            rmp_serde::to_vec::<Option<NumassEvents>>(&None).unwrap() // TODO: send error instead of None
+                            rmp_serde::to_vec::<Option<(NumassEvents, Preprocess)>>(&None).unwrap() // TODO: send error instead of None
                         }
                     } else {
-                        rmp_serde::to_vec::<Option<NumassEvents>>(&None).unwrap() // TODO: send error instead of None
+                        rmp_serde::to_vec::<Option<(NumassEvents, Preprocess)>>(&None).unwrap() // TODO: send error instead of None
                     }
                 }
             };
